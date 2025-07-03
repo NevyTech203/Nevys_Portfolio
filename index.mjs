@@ -1,5 +1,5 @@
 /**********************************************************************
- *  Get single record from table
+ *  Upsert Answer item into table
  **********************************************************************/
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -7,6 +7,9 @@ import { DynamoDBDocument, GetCommand, PutCommand, DeleteCommand, QueryCommand, 
 
 const dynamoDbClient = new DynamoDBClient();
 const docClient = DynamoDBDocument.from(dynamoDbClient);
+
+// we need uuid to generate unique ids
+import { v4 } from 'uuid';
 
 const responseHeaders = {
   // HTTP headers to pass back to the client
@@ -24,31 +27,74 @@ const responseHeaders = {
 };
 
 export const handler = async (event) => {
-  // lets get just the root resource name with the plural ending
-  let resource = event.resource.slice(
-    event.resource.indexOf("/") + 1,
-    event.resource.lastIndexOf("/") - 1
-  );
+  // get the HTTP Method used
+  var httpMethod = event.httpMethod;
+  // get the HTTP body sent
+  var payload = JSON.parse(event.body);
 
-  // lets get the path parameters
-  let pathParameters = event.pathParameters;
-
-  if (pathParameters && pathParameters.id && pathParameters.id.trim()) {
-    // we have a path parameter and an id
-    var id = pathParameters.id;
-  }
-
+  // time to prepare the upsert
   const paramQuery = async () => {
     // define our query
     let params = {
-      TableName: resource,
-      Key: {
-        id: id,
+      TableName: "Answer",
+      Key: { id: "" },
+      UpdateExpression: "set #qi = :qi, #a = :a, #nv = :nv, #pv = :pv",
+      ExpressionAttributeNames: {
+        // define the attributes used in the update expression
+        "#qi": "questionId",
+        "#a": "answer",
+        "#nv": "negativeVotes",
+        "#pv": "positiveVotes",
       },
+      ExpressionAttributeValues: {
+        // set default values
+        ":qi": "",
+        ":a": "",
+        ":nv": 0,
+        ":pv": 0,
+      },
+      // this tells DynamoDB to return the new records with all fields, not just the changed ones
+      // see https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_UpdateItem.html for
+      // information on the possible values
+      ReturnValues: "ALL_NEW",
     };
 
+    // these three fields can be set during create or update
+    //  set the answer if there is one
+    if (payload.answer && payload.answer.trim())
+      params.ExpressionAttributeValues[":a"] = payload.answer;
+
+    //  set the category slug if there is one
+    if (payload.questionId && payload.questionId.trim())
+      params.ExpressionAttributeValues[":qi"] = payload.questionId;
+
+    if (httpMethod == "PUT") {
+      // PUTs are updates but the ID is passed as a path paremeter
+      // lets get the path parameters
+      let pathParameters = event.pathParameters;
+
+      //  set the unique key of the item to be modified
+      params.Key.id = pathParameters.id;
+
+      // these two values are only changed - they are always defaulted during create
+      //  set the negativeVotes
+      params.ExpressionAttributeValues[":nv"] = payload.negativeVotes;
+
+      //  set the positiveVotes
+      params.ExpressionAttributeValues[":pv"] = payload.positiveVotes;
+    } else {
+      // POSTs are inserts
+      // create and set the unique key. its a uuid without the '-'
+      var id = v4().replace(/\-/g, "");
+      params.Key.id = id;
+    }
+
+    // uncomment the next line to see the parameters as sent to DynamoDB
+    //console.log(JSON.stringify(params));
+
+    // we create a promise to wrap the async DynamoDB execution
     return new Promise((resolve, reject) => {
-      var queryParams = docClient.send(new GetCommand(params));
+      var queryParams = docClient.send(new UpdateCommand(params));
       queryParams
         .then(function (data) {
           resolve({
@@ -63,6 +109,6 @@ export const handler = async (event) => {
         });
     });
   };
-
+  // we await our promise here and return the result (see the resolve above)
   return await paramQuery();
 };
